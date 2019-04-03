@@ -14,6 +14,20 @@ function julianise_numpy_matrix()
   return A
 end
 
+function removerowcol(A, rowcol)
+  B = spzeros(size(A, 1) - 1, size(A, 1) - 1)
+  for k in eachindex(A)
+    i, j = k[1], k[2]
+    i == rowcol && continue
+    j == rowcol && continue
+    i > rowcol && (i -= 1)
+    j > rowcol && (j -= 1)
+    B[i, j] = A[k]
+  end
+  A = B
+  return A
+end
+
 function readindices()
   """
   Read the index file, which is strictly necessary but is helpful for humans
@@ -27,7 +41,8 @@ function readindices()
     index2name[index] = name
     name2index[name] = index
   end
-  return index2name, name2index
+  allnames = [index2name[i] for i in sort(collect(keys(index2name)))]
+  return allnames
 end
 
 function readinventory(filename)
@@ -57,7 +72,7 @@ function dosolve(u0, integrator, A, tspan, rtol=1.0e-3)
   end
   f(u, p, t) = A * u
   prob = ODEProblem(f, u0, tspan)
-  sol = solve(prob, integrator, reltol=rtol, abstol=0.0)
+  sol = solve(prob, integrator, reltol=rtol)#, abstol=0.0)
   return sol.u[end]
 end
 
@@ -67,20 +82,33 @@ function run(inventoryfilename, rtol=1.0e-3)
   """
   @show inventoryfilename, rtol
   A = julianise_numpy_matrix() # the du/dt = A u
-  index2name, name2index = readindices() # useful dictionaries
   initialconditions, expectedresults, duration = readinventory(inventoryfilename)
+  allnames = readindices() # useful dictionaries
 
-  u0 = zeros(size(A, 1))
+  u0 = zeros(2233)
   for (name, n) in initialconditions
-    @assert 1 <= name2index[name] <= size(A, 1) "$name, $(name2index[name]), $(size(A))"
-    u0[name2index[name]] = n
+    u0[findfirst(allnames .== name)] = n
   end
+
+  deletednames = []
+
+  c = [a[2] for a in findall(.!iszero.(A))]
+  r = [a[1] for a in findall(.!iszero.(A))]
+  deletedindices = reverse(sort(collect(setdiff(collect(1:size(A, 1)), sort(unique(vcat(c, r)))))))
+  @show deletednames = allnames[deletedindices]
+  for deletedname in deletednames
+    i = findfirst(allnames .== deletedname)
+    deleteat!(u0, i)
+    deleteat!(allnames, i)
+    A = removerowcol(A, i)
+  end
+  @assert !any(sum(A, dims=2)[:] .== 0)
 
   #nameintegrators = zip(("ImplicitMidpoint",), (ImplicitMidpoint(),))
   #nameintegrators = zip(("ImplicitEuler",), (ImplicitEuler(),))
   #nameintegrators = zip(("RadauIIA5", ), (RadauIIA5(), ))
-  #nameintegrators = zip(("AutoVern9Rodas5", ), (AutoVern9(Rodas5()), ))
-  nameintegrators = zip(("AutoTsit5Rosenbrock23", ), (AutoTsit5(Rosenbrock23()), ))
+  nameintegrators = zip(("AutoVern9Rodas5", ), (AutoVern9(Rodas5()), ))
+  #nameintegrators = zip(("AutoTsit5Rosenbrock23", ), (AutoTsit5(Rosenbrock23()), ))
   #nameintegrators = zip(("exp", ), (exp, ))
   for (integratorname, integrator) in nameintegrators
     timetaken = @elapsed results = dosolve(deepcopy(u0), integrator, A, (0.0, duration))
@@ -88,16 +116,18 @@ function run(inventoryfilename, rtol=1.0e-3)
     all_results_expected_to_be_zero_are_zero = true
     for (i, result) in enumerate(results)
       # result nuclide should be in expected list
-      name = index2name[i]
+      name = allnames[i]
+      in(name, deletednames) && continue
       expected = expectedresults[name]
-      #iszero(result + expected) || @show i, name, expected, result
       if iszero(expected)
         all_results_expected_to_be_zero_are_zero &= iszero(result)
       else
-        #@test isapprox(expected, result, rtol=rtol, atol=0.0) #atol=0.0 is important
+        outcome = isapprox(expected, result, rtol=rtol, atol=0.0) #atol=0.0 is important
+        outcome || @show name, expected, result
+        @test isapprox(expected, result, rtol=rtol, atol=0.0) #atol=0.0 is important
       end
     end
-    #@test all_results_expected_to_be_zero_are_zero
+    @test all_results_expected_to_be_zero_are_zero
   end
 end
 
@@ -107,15 +137,15 @@ end
 # This is the challenge!
 inventories = []
 push!(inventories, "decay_inventory_H3_3.891050e+08.txt")
-push!(inventories, "decay_inventory_Cf252_8.346980e+07.txt")
-push!(inventories, "decay_inventory_Cf250_4.127730e+08.txt")
-push!(inventories, "decay_inventory_Fe56_1.000000e-02.txt")
-push!(inventories, "decay_inventory_Fe56_1.000000e+15.txt")
-push!(inventories, "decay_inventory_Fe56_2.300000e+08.txt")
-push!(inventories, "decay_inventory_full_1.000000e-02.txt")
-push!(inventories, "decay_inventory_full_1.000000e+05.txt")
-push!(inventories, "decay_inventory_full_1.000000e+15.txt")
-push!(inventories, "decay_inventory_full_1.000000e-18.txt")
+#push!(inventories, "decay_inventory_Cf252_8.346980e+07.txt")
+#push!(inventories, "decay_inventory_Cf250_4.127730e+08.txt")
+#push!(inventories, "decay_inventory_Fe56_1.000000e-02.txt")
+#push!(inventories, "decay_inventory_Fe56_1.000000e+15.txt")
+#push!(inventories, "decay_inventory_Fe56_2.300000e+08.txt")
+#push!(inventories, "decay_inventory_full_1.000000e-02.txt")
+#push!(inventories, "decay_inventory_full_1.000000e+05.txt")
+#push!(inventories, "decay_inventory_full_1.000000e+15.txt")
+#push!(inventories, "decay_inventory_full_1.000000e-18.txt")
 
 @testset "Test all inventories" begin
   for inventory in inventories
