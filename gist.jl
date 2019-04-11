@@ -1,4 +1,4 @@
-using DelimitedFiles, DifferentialEquations, SparseArrays, Test
+using DelimitedFiles, DifferentialEquations, SparseArrays, Test, ArbNumerics
 
 function julianise_numpy_matrix()
   """
@@ -61,13 +61,26 @@ function readinventory(filename)
   return initialconditions, expectedresults, duration
 end
 
+"""With thanks to Jeffrey Sarnhoff & ArbNumerics"""
+function expmatrix(m::AbstractArray{T,2}) where {T<:Real}
+  setworkingprecision(ArbReal, 256)
+  a = Array{ArbReal,2}(undef, size(m))
+  a[:] = m[:]
+  z = exp(a)
+  result = similar(m)
+  result[:] = z[:]
+  return result
+end
+
 function dosolve(u0, integrator, A, tspan, rtol=1.0e-3)
   """
   Solve the problem given the initial conditions u0, ODE integrator, decay rate matrix A,
   time span tspan, and relative tolerance of for the solver.
   """
   if integrator == exp 
-    expA = exp(Matrix(A * tspan[2])) # Matrix needed to turn to sparse A to full
+    @time expA = expmatrix(A * tspan[2])
+    @show tspan
+    @show expA
     return expA * u0
   end
   f(u, p, t) = A * u
@@ -92,28 +105,32 @@ function run(inventoryfilename, rtol=1.0e-3)
 
   deletednames = []
 
-  c = [a[2] for a in findall(.!iszero.(A))]
-  r = [a[1] for a in findall(.!iszero.(A))]
-  deletedindices = reverse(sort(collect(setdiff(collect(1:size(A, 1)), sort(unique(vcat(c, r)))))))
-  @show deletednames = allnames[deletedindices]
-  for deletedname in deletednames
-    i = findfirst(allnames .== deletedname)
-    deleteat!(u0, i)
-    deleteat!(allnames, i)
-    A = removerowcol(A, i)
+  deletenamesthatdontdecay = false
+  if deletenamesthatdontdecay
+    c = [a[2] for a in findall(.!iszero.(A))]
+    r = [a[1] for a in findall(.!iszero.(A))]
+    deletedindices = reverse(sort(collect(setdiff(collect(1:size(A, 1)), sort(unique(vcat(c, r)))))))
+    @show deletednames = allnames[deletedindices]
+    for deletedname in deletednames
+      i = findfirst(allnames .== deletedname)
+      deleteat!(u0, i)
+      deleteat!(allnames, i)
+      A = removerowcol(A, i)
+    end
+    @assert !any(sum(A, dims=2)[:] .== 0)
   end
-  @assert !any(sum(A, dims=2)[:] .== 0)
 
   #nameintegrators = zip(("ImplicitMidpoint",), (ImplicitMidpoint(),))
-  #nameintegrators = zip(("ImplicitEuler",), (ImplicitEuler(),))
-  #nameintegrators = zip(("RadauIIA5", ), (RadauIIA5(), ))
-  nameintegrators = zip(("AutoVern9Rodas5", ), (AutoVern9(Rodas5()), ))
+  #nameintegrators = zip(("AutoVern9Rodas5", ), (AutoVern9(Rodas5()), ))
   #nameintegrators = zip(("AutoTsit5Rosenbrock23", ), (AutoTsit5(Rosenbrock23()), ))
-  #nameintegrators = zip(("exp", ), (exp, ))
+  #nameintegrators = zip(("LinearExponential", ), (LinearExponential(:adaptive, 30, 10), ))
+  nameintegrators = zip(("exp", ), (exp, ))
   for (integratorname, integrator) in nameintegrators
-    timetaken = @elapsed results = dosolve(deepcopy(u0), integrator, A, (0.0, duration))
+    timetaken = @elapsed results = dosolve(deepcopy(u0), integrator, A, (0.0, duration), rtol/10)
 
     all_results_expected_to_be_zero_are_zero = true
+    numberofpasses = 0
+    numberoffails = 0
     for (i, result) in enumerate(results)
       # result nuclide should be in expected list
       name = allnames[i]
@@ -124,9 +141,15 @@ function run(inventoryfilename, rtol=1.0e-3)
       else
         outcome = isapprox(expected, result, rtol=rtol, atol=0.0) #atol=0.0 is important
         outcome || @show name, expected, result
-        @test isapprox(expected, result, rtol=rtol, atol=0.0) #atol=0.0 is important
+        #@test isapprox(expected, result, rtol=rtol, atol=0.0) #atol=0.0 is important
+        if isapprox(expected, result, rtol=rtol, atol=0.0) #atol=0.0 is important
+          numberofpasses += 1
+        else
+          numberoffails += 1
+        end
       end
     end
+    @show numberofpasses, numberoffails
     @test all_results_expected_to_be_zero_are_zero
   end
 end
@@ -136,7 +159,7 @@ end
 # Ideally a single ODE solver can be found that works for all cases
 # This is the challenge!
 inventories = []
-push!(inventories, "decay_inventory_H3_3.891050e+08.txt")
+#push!(inventories, "decay_inventory_H3_3.891050e+08.txt")
 #push!(inventories, "decay_inventory_Cf252_8.346980e+07.txt")
 #push!(inventories, "decay_inventory_Cf250_4.127730e+08.txt")
 #push!(inventories, "decay_inventory_Fe56_1.000000e-02.txt")
@@ -144,8 +167,8 @@ push!(inventories, "decay_inventory_H3_3.891050e+08.txt")
 #push!(inventories, "decay_inventory_Fe56_2.300000e+08.txt")
 #push!(inventories, "decay_inventory_full_1.000000e-02.txt")
 #push!(inventories, "decay_inventory_full_1.000000e+05.txt")
-#push!(inventories, "decay_inventory_full_1.000000e+15.txt")
-#push!(inventories, "decay_inventory_full_1.000000e-18.txt")
+push!(inventories, "decay_inventory_full_1.000000e+15.txt")
+push!(inventories, "decay_inventory_full_1.000000e-18.txt")
 
 @testset "Test all inventories" begin
   for inventory in inventories
